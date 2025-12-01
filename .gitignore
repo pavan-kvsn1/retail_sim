@@ -1,0 +1,81 @@
+# Data files (too large for git)
+raw_data/
+data/
+checkpoints/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+.nox/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Claude Code
+.claude/
+
+# Misc
+*.log
+*.tmp
+*.temp
+.env
+.env.local
+*.bak
+
+# Large model files
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+
+# Keep structure but ignore contents
+!data/.gitkeep
+!raw_data/.gitkeep
+!checkpoints/.gitkeep
+!logs/.gitkeep
