@@ -15,12 +15,16 @@ dependencies = [
     "pyarrow>=14.0.0",
     "scipy>=1.11.0",
     "tqdm (>=4.67.1,<5.0.0)",
+    "torch (==2.2.0)",
 ]
 
+[tool.poetry.dependencies]
+python = "^3.11"
+
 [project.optional-dependencies]
-torch = ["torch>=2.0.0"]
+torch = ["torch>=2.0.0,<2.9.0"]
 notebooks = ["jupyter>=1.0.0", "ipykernel>=6.0.0"]
-all = ["torch>=2.0.0", "jupyter>=1.0.0", "ipykernel>=6.0.0"]
+all = ["torch>=2.0.0,<2.9.0", "jupyter>=1.0.0", "ipykernel>=6.0.0"]
 
 [project.scripts]
 retail-data-pipeline = "src.data_pipeline.run_pipeline:main"
