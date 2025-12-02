@@ -19,7 +19,8 @@ Reference: RetailSim_Data_Pipeline_and_World_Model_Design.md Section 5.6
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LambdaLR
+import math
 from pathlib import Path
 import json
 import logging
@@ -29,9 +30,9 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 import numpy as np
 
-from model import WorldModel, WorldModelConfig
-from losses import WorldModelLoss
-from dataset import WorldModelDataset, WorldModelDataLoader, EvaluationDataLoader
+from .model import WorldModel, WorldModelConfig
+from .losses import WorldModelLoss
+from .dataset import WorldModelDataset, WorldModelDataLoader, EvaluationDataLoader
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,6 +64,11 @@ class TrainingConfig:
     num_epochs: int = 20
     warmup_epochs: int = 3
     finetune_epochs: int = 5
+
+    # Learning rate schedule
+    warmup_steps: Optional[int] = None  # If None, uses warmup_epochs
+    use_cosine_schedule: bool = True
+    min_lr_ratio: float = 0.01  # Minimum LR as fraction of max LR
 
     # Masking
     mask_prob_train: float = 0.15
@@ -136,6 +142,9 @@ class Trainer:
         # Initialize optimizer (will be reset per phase)
         self._init_optimizer()
 
+        # Scheduler will be initialized in train() when we know total steps
+        self.scheduler = None
+
         # Training state
         self.global_step = 0
         self.best_val_loss = float('inf')
@@ -200,6 +209,41 @@ class Trainer:
             lr=lr,
             weight_decay=self.config.weight_decay
         )
+
+    def _init_scheduler(self, total_steps: int):
+        """Initialize learning rate scheduler with warmup + cosine annealing."""
+        # Calculate warmup steps
+        if self.config.warmup_steps is not None:
+            warmup_steps = self.config.warmup_steps
+        else:
+            steps_per_epoch = len(self.train_loader)
+            warmup_steps = self.config.warmup_epochs * steps_per_epoch
+
+        min_lr = self.config.learning_rate * self.config.min_lr_ratio
+
+        def lr_lambda(current_step: int) -> float:
+            """
+            Linear warmup then cosine annealing.
+
+            Returns multiplier for base learning rate.
+            """
+            if current_step < warmup_steps:
+                # Linear warmup: 0 -> 1
+                return float(current_step) / float(max(1, warmup_steps))
+
+            if not self.config.use_cosine_schedule:
+                # Constant LR after warmup
+                return 1.0
+
+            # Cosine annealing: 1 -> min_lr_ratio
+            progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+            cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+            # Scale between min_lr_ratio and 1.0
+            return self.config.min_lr_ratio + (1.0 - self.config.min_lr_ratio) * cosine_decay
+
+        self.scheduler = LambdaLR(self.optimizer, lr_lambda)
+        logger.info(f"Scheduler initialized: {warmup_steps:,} warmup steps, "
+                    f"{total_steps - warmup_steps:,} cosine annealing steps")
 
     def _prepare_batch(self, batch) -> Dict[str, torch.Tensor]:
         """Convert WorldModelBatch to tensors on device."""
@@ -367,6 +411,7 @@ class Trainer:
             'global_step': self.global_step,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
             'best_val_loss': self.best_val_loss,
             'config': asdict(self.config)
         }
@@ -385,6 +430,8 @@ class Trainer:
         checkpoint = torch.load(path, map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if checkpoint.get('scheduler_state_dict') and self.scheduler:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         self.global_step = checkpoint['global_step']
         self.best_val_loss = checkpoint['best_val_loss']
         logger.info(f"Loaded checkpoint from {path}")
@@ -393,12 +440,10 @@ class Trainer:
     def train_epoch(self, epoch: int) -> Dict[str, float]:
         """Train for one epoch."""
         phase = self.config.get_phase(epoch)
-        lr = self.config.get_learning_rate(epoch)
         mask_prob = self.config.get_mask_prob(epoch)
 
-        # Update learning rate
-        for param_group in self.optimizer.param_groups:
-            param_group['lr'] = lr
+        # Get current LR from scheduler (for logging only)
+        current_lr = self.scheduler.get_last_lr()[0] if self.scheduler else self.config.learning_rate
 
         # Update dataset mask probability
         self.train_dataset.mask_prob = mask_prob
@@ -406,7 +451,7 @@ class Trainer:
         # Update loss weights for phase
         self.criterion.set_phase(phase)
 
-        logger.info(f"Epoch {epoch}/{self.config.num_epochs} - Phase: {phase}, LR: {lr}, Mask: {mask_prob}")
+        logger.info(f"Epoch {epoch}/{self.config.num_epochs} - Phase: {phase}, LR: {current_lr:.2e}, Mask: {mask_prob}")
 
         # Create dataloader
         train_loader = WorldModelDataLoader(
@@ -440,6 +485,10 @@ class Trainer:
             if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
                 self.optimizer_step()
                 self.global_step += 1
+
+                # Step scheduler (per step, not per epoch)
+                if self.scheduler is not None:
+                    self.scheduler.step()
 
                 # Logging
                 if self.global_step % 100 == 0:
@@ -507,6 +556,21 @@ class Trainer:
             logger.info(f"Resuming from epoch {start_epoch}")
 
         logger.info("Starting training...")
+
+        # Calculate total steps and initialize scheduler
+        # Create a temporary dataloader to get step count
+        temp_loader = WorldModelDataLoader(
+            self.train_dataset,
+            batch_size=self.config.batch_size,
+            shuffle=False,
+            apply_masking=False,
+            bucket_batching=True
+        )
+        steps_per_epoch = len(temp_loader) // self.config.gradient_accumulation_steps
+        total_steps = steps_per_epoch * self.config.num_epochs
+        self.train_loader = temp_loader  # Store for scheduler init
+        self._init_scheduler(total_steps)
+        logger.info(f"Total training steps: {total_steps:,} ({steps_per_epoch:,} per epoch)")
 
         # Initial validation before training starts
         logger.info("Running initial validation...")

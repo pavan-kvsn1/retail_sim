@@ -13,6 +13,8 @@ This document explains how data flows through the World Model training pipeline,
 7. [Why Each Piece Matters](#why-each-piece-matters)
 8. [Running the Training Pipeline](#running-the-training-pipeline)
 
+> **Note**: This document covers **masked prediction** (BERT-style training). For **next-basket prediction** (recommended for RL/simulation), see [section5.2.2_next_basket_prediction.md](section5.2.2_next_basket_prediction.md).
+
 ---
 
 ## The Big Picture

@@ -130,9 +130,12 @@ World Model training infrastructure:
 |-----------|-------------|
 | [Data Architecture](section5.0_training_data_architecture.md) | Temporal splits, bucket batching |
 | [Training Pipeline](section5.1_training.md) | Model, losses, training loop |
-| [Deep Dive](section5.2_training_deep_dive.md) | Detailed explanation of tensors and data flow |
+| [Deep Dive: Masked Prediction](section5.2_training_deep_dive.md) | Detailed explanation of tensors and data flow |
+| [Next-Basket Prediction](section5.2.2_next_basket_prediction.md) | **Recommended for RL/simulation** |
 
-**Architecture**: Mamba Encoder (4 layers) + Transformer Decoder (2 layers) = ~23M parameters
+**Two Training Paradigms:**
+- **Masked Prediction** (~23M params): BERT-style, good for embeddings
+- **Next-Basket Prediction** (~15M params): Predicts future baskets, needed for RL
 
 ## Project Structure
 

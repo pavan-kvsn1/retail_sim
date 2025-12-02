@@ -12,10 +12,17 @@ This document captures the full context of the RetailSim project for session con
 
 The model learns to answer: *"Given everything we know about a customer, what products will they buy in their next shopping trip?"*
 
-This is framed as a **Masked Event Modeling** task (similar to BERT):
-- Take a shopping basket: [Milk, Bread, Eggs, Cheese, Apples]
-- Mask 15% of products: [Milk, [MASK], Eggs, Cheese, [MASK]]
-- Train the model to predict the masked products
+**Two Training Paradigms:**
+
+1. **Masked Event Modeling** (BERT-style) - for learning embeddings:
+   - Take a shopping basket: [Milk, Bread, Eggs, Cheese, Apples]
+   - Mask 15% of products: [Milk, [MASK], Eggs, Cheese, [MASK]]
+   - Predict the masked products in the SAME basket
+
+2. **Next-Basket Prediction** (Recommended for RL) - for simulation:
+   - Take full basket at time t: [Milk, Cheese, Bread]
+   - Predict ENTIRE basket at time t+1: [Yogurt, Eggs, Fruit, ...]
+   - This is what's needed for RL/simulation environments
 
 ### Dataset
 
@@ -203,22 +210,26 @@ retail_sim/
 │   └── training/             # Section 5
 │       ├── prepare_samples.py
 │       ├── prepare_tensor_cache.py
-│       ├── dataset.py        # WorldModelDataset, DataLoader
-│       ├── model.py          # Mamba + Transformer architecture
-│       ├── losses.py         # Focal, Contrastive, Multi-task
-│       ├── train.py          # TrainingConfig, Trainer
-│       ├── evaluate.py       # Evaluator, metrics
-│       ├── __init__.py
-│       └── README.md
+│       ├── dataset.py           # WorldModelDataset (masked prediction)
+│       ├── dataset_next_basket.py  # NextBasketDataset (for RL)
+│       ├── model.py             # Mamba + Transformer (masked)
+│       ├── model_next_basket.py # Next-basket model (for RL)
+│       ├── losses.py            # Focal, Contrastive, Multi-task
+│       ├── losses_next_basket.py   # Multi-label BCE + metrics
+│       ├── train.py             # TrainingConfig, Trainer (masked)
+│       ├── train_next_basket.py # Trainer for next-basket
+│       ├── evaluate.py          # Evaluator, metrics
+│       └── __init__.py
 │
 ├── tests/
 │   ├── test_data_pipeline/
 │   ├── test_feature_engineering/
 │   ├── test_tensor_preparation/
 │   └── test_training/
-│       ├── test_losses.py    # 19 tests
-│       ├── test_model.py     # 29 tests
-│       └── test_train.py     # 15 tests
+│       ├── test_losses.py       # 19 tests (masked prediction)
+│       ├── test_model.py        # 29 tests (masked model)
+│       ├── test_train.py        # 15 tests
+│       └── test_next_basket.py  # 27 tests (next-basket pipeline)
 │
 ├── docs/
 │   ├── index.md
@@ -295,53 +306,71 @@ buckets = {
 ### src/training/__init__.py
 
 ```python
-from .prepare_samples import enhance_temporal_metadata
-from .prepare_tensor_cache import prepare_tensor_cache
-from .dataset import WorldModelDataset, WorldModelDataLoader, EvaluationDataLoader
-from .model import WorldModel, WorldModelConfig, create_world_model
+# Masked prediction (original)
+from .dataset import WorldModelDataset, WorldModelDataLoader
+from .model import WorldModel, WorldModelConfig
 from .losses import FocalLoss, ContrastiveLoss, WorldModelLoss
 from .train import TrainingConfig, Trainer
-from .evaluate import Evaluator, EvaluationMetrics, run_evaluation
+
+# Next-basket prediction (for RL/simulation)
+from .dataset_next_basket import NextBasketDataset, NextBasketDataLoader
+from .model_next_basket import NextBasketWorldModel, NextBasketModelConfig
+from .losses_next_basket import NextBasketLoss, NextBasketMetrics
 ```
 
 ---
 
 ## Running the Full Pipeline
 
+### Masked Prediction (for embeddings)
+
 ```bash
-# 1. Data Pipeline (5 seconds)
-python -m src.data_pipeline.run_pipeline --nrows 10000
+# 1-5. Data pipeline, features, tensor prep (same as below)
 
-# 2. Feature Engineering (60 seconds)
-python -m src.feature_engineering.run_feature_engineering --nrows 10000
-
-# 3. Tensor Preparation (2 seconds)
-python -m src.tensor_preparation.run_tensor_preparation
-
-# 4. Prepare Training Samples
-python -m src.training.prepare_samples
-
-# 5. Prepare Tensor Cache
-python -m src.training.prepare_tensor_cache
-
-# 6. Train
-python -m src.training.train --epochs 20 --batch-size 256
+# 6. Train masked model
+python -m src.training.train --epochs 20 --batch-size 128 --device mps
 
 # 7. Evaluate
 python -m src.training.evaluate checkpoints/best_model.pt --detailed
+```
+
+### Next-Basket Prediction (for RL/simulation) - RECOMMENDED
+
+```bash
+# 1. Data Pipeline
+python -m src.data_pipeline.run_pipeline
+
+# 2. Feature Engineering
+python -m src.feature_engineering.run_feature_engineering
+
+# 3. Data Preparation
+python -m src.data_preparation.run_data_preparation
+
+# 4. Generate Next-Basket Samples
+python -m src.data_preparation.stage4_next_basket_samples
+
+# 5. Train Next-Basket Model
+python -m src.training.train_next_basket \
+    --epochs 20 \
+    --batch-size 64 \
+    --device mps \
+    --gradient-checkpointing
+
+# Metrics: Precision@10, Recall@10, F1@10, NDCG@10
 ```
 
 ---
 
 ## Test Coverage
 
-All 63 tests passing:
+All 90 tests passing:
 
 | Module | Tests | Description |
 |--------|-------|-------------|
 | test_losses.py | 19 | FocalLoss, ContrastiveLoss, AuxiliaryLoss, WorldModelLoss |
-| test_model.py | 29 | ContextFusion, ProductFusion, MambaBlock, MambaEncoder, TransformerDecoder, OutputHeads, WorldModel |
+| test_model.py | 29 | ContextFusion, ProductFusion, MambaBlock, MambaEncoder, TransformerDecoder |
 | test_train.py | 15 | TrainingConfig, Trainer, Checkpointing, Phase transitions |
+| test_next_basket.py | 27 | NextBasketWorldModel, FocalBCE, Metrics (P@k, R@k, F1, NDCG) |
 
 Run tests:
 ```bash
@@ -390,17 +419,20 @@ Forces the model to understand context holistically:
 - [x] Section 3: Feature engineering (5 layers)
 - [x] Section 4: Tensor preparation (T1-T6)
 - [x] Section 5: Training infrastructure
-  - [x] WorldModelDataset and DataLoader
-  - [x] WorldModel (Mamba + Transformer)
+  - [x] WorldModelDataset and DataLoader (masked prediction)
+  - [x] WorldModel (Mamba + Transformer, ~23M params)
   - [x] Loss functions (Focal, Contrastive, Auxiliary)
-  - [x] TrainingConfig and Trainer
+  - [x] **NextBasketDataset and DataLoader (for RL)**
+  - [x] **NextBasketWorldModel (~15M params)**
+  - [x] **Next-basket losses (Focal BCE) and metrics (P@k, R@k, F1, NDCG)**
+  - [x] TrainingConfig and Trainer (both paradigms)
   - [x] Evaluator and metrics
-- [x] Tests: 63 tests passing
+- [x] Tests: 90 tests passing
 - [x] Documentation: Comprehensive docs in /docs
 
 ### Future Work (Not Yet Implemented)
 
-- [ ] Reinforcement learning for sequential decisions
+- [ ] Reinforcement learning agent using NextBasketWorldModel
 - [ ] Counterfactual simulation capabilities
 - [ ] Price optimization experiments
 - [ ] Real-time inference API
@@ -410,16 +442,29 @@ Forces the model to understand context holistically:
 
 ## Key Files Quick Reference
 
+### Masked Prediction (for embeddings)
 | Purpose | File |
 |---------|------|
-| Main model | `src/training/model.py` |
-| Training loop | `src/training/train.py` |
-| Loss functions | `src/training/losses.py` |
-| Dataset/DataLoader | `src/training/dataset.py` |
-| Evaluation | `src/training/evaluate.py` |
-| Model tests | `tests/test_training/test_model.py` |
-| Training tests | `tests/test_training/test_train.py` |
-| Deep dive docs | `docs/section5.2_training_deep_dive.md` |
+| Model | `src/training/model.py` |
+| Training | `src/training/train.py` |
+| Loss | `src/training/losses.py` |
+| Dataset | `src/training/dataset.py` |
+
+### Next-Basket Prediction (for RL) - RECOMMENDED
+| Purpose | File |
+|---------|------|
+| Model | `src/training/model_next_basket.py` |
+| Training | `src/training/train_next_basket.py` |
+| Loss + Metrics | `src/training/losses_next_basket.py` |
+| Dataset | `src/training/dataset_next_basket.py` |
+| Sample generation | `src/data_preparation/stage4_next_basket_samples.py` |
+
+### Testing
+| Purpose | File |
+|---------|------|
+| Masked tests | `tests/test_training/test_model.py` |
+| Next-basket tests | `tests/test_training/test_next_basket.py` |
+| Documentation | `docs/section5.2_training_deep_dive.md` |
 
 ---
 
@@ -450,5 +495,6 @@ This context document was created to preserve project knowledge across Claude Co
 
 ---
 
-*Last updated: November 2024*
+*Last updated: December 2024*
 *Design spec version: RetailSim_Data_Pipeline_and_World_Model_Design.md v7.6*
+*Major update: Added next-basket prediction pipeline for RL/simulation*

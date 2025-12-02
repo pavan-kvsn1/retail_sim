@@ -20,8 +20,8 @@ import logging
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
-from model import WorldModel, WorldModelConfig
-from dataset import WorldModelDataset, WorldModelDataLoader, EvaluationDataLoader
+from .model import WorldModel, WorldModelConfig
+from .dataset import WorldModelDataset, WorldModelDataLoader, EvaluationDataLoader
 
 logging.basicConfig(
     level=logging.INFO,
