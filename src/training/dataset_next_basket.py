@@ -198,23 +198,28 @@ class NextBasketDataset:
 
     def _load_basket_attributes(self):
         """Load basket attributes for auxiliary tasks."""
+        # Try parquet first (smaller, faster), fall back to transactions.csv
+        parquet_path = self.project_root / 'data' / 'prepared' / 'basket_attributes.parquet'
         transactions_path = self.project_root / 'raw_data' / 'transactions.csv'
 
-        if not transactions_path.exists():
-            logger.warning("Transactions not found, auxiliary labels unavailable")
+        if parquet_path.exists():
+            logger.info("Loading basket attributes from parquet...")
+            df = pd.read_parquet(parquet_path)
+            self.basket_attrs = df.set_index('BASKET_ID').to_dict('index')
+            logger.info(f"Loaded attributes for {len(self.basket_attrs):,} baskets")
+        elif transactions_path.exists():
+            logger.info("Loading basket attributes from transactions.csv...")
+            df = pd.read_csv(
+                transactions_path,
+                usecols=['BASKET_ID', 'BASKET_TYPE', 'BASKET_DOMINANT_MISSION',
+                         'BASKET_PRICE_SENSITIVITY', 'BASKET_SIZE']
+            )
+            basket_attrs = df.groupby('BASKET_ID').first()
+            self.basket_attrs = basket_attrs.to_dict('index')
+            logger.info(f"Loaded attributes for {len(self.basket_attrs):,} baskets")
+        else:
+            logger.warning("Basket attributes not found, auxiliary labels unavailable")
             self.basket_attrs = {}
-            return
-
-        logger.info("Loading basket attributes...")
-        df = pd.read_csv(
-            transactions_path,
-            usecols=['BASKET_ID', 'BASKET_TYPE', 'BASKET_DOMINANT_MISSION',
-                     'BASKET_PRICE_SENSITIVITY', 'BASKET_SIZE']
-        )
-
-        basket_attrs = df.groupby('BASKET_ID').first()
-        self.basket_attrs = basket_attrs.to_dict('index')
-        logger.info(f"Loaded attributes for {len(self.basket_attrs):,} baskets")
 
     def _build_vocabulary(self):
         """Build product vocabulary from samples (input + target products only)."""
