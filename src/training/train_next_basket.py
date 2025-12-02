@@ -178,6 +178,11 @@ class NextBasketTrainer:
 
         self.model.to(self.device)
 
+        # Multi-GPU support with DataParallel
+        if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+            logger.info(f"Using DataParallel with {torch.cuda.device_count()} GPUs")
+            self.model = nn.DataParallel(self.model)
+
     def _setup_training(self):
         """Setup optimizer, scheduler, loss."""
         # Optimizer
@@ -427,8 +432,11 @@ class NextBasketTrainer:
         """Save model checkpoint."""
         checkpoint_path = self.config.checkpoint_dir / f'next_basket_{identifier}.pt'
 
+        # Handle DataParallel wrapper
+        model_to_save = self.model.module if hasattr(self.model, 'module') else self.model
+
         torch.save({
-            'model_state_dict': self.model.state_dict(),
+            'model_state_dict': model_to_save.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'global_step': self.global_step,
