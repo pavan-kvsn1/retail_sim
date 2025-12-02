@@ -196,6 +196,37 @@ class NextBasketDataset:
         else:
             self.vocab = {}
 
+        # Price features lookup
+        price_path = cache_dir / 'price_features_indexed.parquet'
+        if price_path.exists():
+            logger.info("Loading price features (this may take a minute)...")
+            price_df = pd.read_parquet(price_path)
+
+            # Feature columns (64 total)
+            feature_cols = (
+                [f'fourier_{i}' for i in range(24)] +
+                [f'log_{i}' for i in range(16)] +
+                [f'relative_{i}' for i in range(16)] +
+                [f'velocity_{i}' for i in range(8)]
+            )
+
+            # Create lookup dict efficiently (much faster than iterrows)
+            product_ids = price_df['product_id'].values
+            store_ids = price_df['store_id'].values
+            weeks = price_df['week'].astype(int).values
+            values = price_df[feature_cols].values.astype(np.float32)
+
+            self.price_features_lookup = {
+                (product_ids[i], store_ids[i], weeks[i]): values[i]
+                for i in range(len(price_df))
+            }
+
+            logger.info(f"Loaded price features for {len(self.price_features_lookup):,} (product, store, week) combinations")
+            del price_df  # Free memory
+        else:
+            logger.warning("Price features not found, using random")
+            self.price_features_lookup = None
+
     def _load_basket_attributes(self):
         """Load basket attributes for auxiliary tasks."""
         # Try parquet first (smaller, faster), fall back to transactions.csv
@@ -341,11 +372,13 @@ class NextBasketDataset:
         # T6: Trip Context [B, 48]
         trip_context, auxiliary_labels = self._encode_trip_batch(target_basket_ids)
 
-        # Input basket at time t
+        # Input basket at time t (use input store/week for price lookup)
         input_products_list = batch_samples['input_products'].tolist()
+        input_store_ids = batch_samples['input_store_id'].values
+        input_weeks = batch_samples['input_week'].values
         (input_product_ids, input_embeddings, input_price_features,
          input_attention_mask, input_lengths) = self._encode_product_sequence(
-            input_products_list, self.max_input_len
+            input_products_list, self.max_input_len, input_store_ids, input_weeks
         )
 
         # Target basket (multi-hot and sequence)
@@ -394,7 +427,9 @@ class NextBasketDataset:
         if static_dim < 64:
             static = np.pad(static, ((0, 0), (0, 64 - static_dim)))
 
-        affinity = np.random.randn(batch_size, 32).astype(np.float32) * 0.1
+        # Customer affinity placeholder - zeros for now (no real affinity data available)
+        # TODO: Replace with real customer-category affinity scores if available
+        affinity = np.zeros((batch_size, 32), dtype=np.float32)
 
         return np.concatenate([static, history, affinity], axis=1).astype(np.float32)
 
@@ -484,9 +519,11 @@ class NextBasketDataset:
     def _encode_product_sequence(
         self,
         products_list: List[List[str]],
-        max_len: int
+        max_len: int,
+        store_ids: np.ndarray = None,
+        weeks: np.ndarray = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Encode product sequences with embeddings."""
+        """Encode product sequences with embeddings and price features."""
         batch_size = len(products_list)
 
         product_ids = np.zeros((batch_size, max_len), dtype=np.int32)
@@ -497,6 +534,8 @@ class NextBasketDataset:
 
         for i, products in enumerate(products_list):
             seq_len = min(len(products), max_len - 1)  # -1 for EOS
+            store_id = store_ids[i] if store_ids is not None else None
+            week = int(weeks[i]) if weeks is not None else None
 
             for j, prod in enumerate(products[:seq_len]):
                 prod_idx = self.product_to_idx.get(prod, 0)
@@ -505,7 +544,16 @@ class NextBasketDataset:
                 if prod_idx > 0 and prod_idx < len(self.product_embeddings):
                     embeddings[i, j] = self.product_embeddings[prod_idx]
 
-                price_features[i, j] = np.random.randn(64).astype(np.float32) * 0.1
+                # Look up real price features if available
+                if self.price_features_lookup is not None and store_id and week:
+                    key = (prod, store_id, week)
+                    if key in self.price_features_lookup:
+                        price_features[i, j] = self.price_features_lookup[key]
+                    else:
+                        # Fallback to random if not found
+                        price_features[i, j] = np.random.randn(64).astype(np.float32) * 0.1
+                else:
+                    price_features[i, j] = np.random.randn(64).astype(np.float32) * 0.1
 
             # EOS token
             product_ids[i, seq_len] = self.EOS_TOKEN

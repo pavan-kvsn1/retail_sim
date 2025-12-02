@@ -130,12 +130,37 @@ World Model training infrastructure:
 |-----------|-------------|
 | [Data Architecture](section5.0_training_data_architecture.md) | Temporal splits, bucket batching |
 | [Training Pipeline](section5.1_training.md) | Model, losses, training loop |
-| [Deep Dive: Masked Prediction](section5.2_training_deep_dive.md) | Detailed explanation of tensors and data flow |
-| [Next-Basket Prediction](section5.2.2_next_basket_prediction.md) | **Recommended for RL/simulation** |
+| [Deep Dive: Masked Prediction](section5.2.1_training_deep_dive.md) | Detailed explanation of tensors and data flow |
+| [Next-Basket Prediction](section5.2.2_next_basket_prediction.md) | Stage 2: What will they buy? |
+| [Store Visit Prediction](section5.2.3_store_visit_prediction.md) | **Stage 1: Where will they shop?** |
 
-**Two Training Paradigms:**
+### [Section 6: End-to-End Data Flow](section6_data_flow_end_to_end.md)
+
+Complete data flow documentation from raw data to training:
+
+| Topic | Description |
+|-------|-------------|
+| Pipeline Overview | Visual flow from transactions.csv to models |
+| Data Pipeline Stages | Prices, graph, affinity, missions |
+| Feature Engineering | 5 layers producing embeddings |
+| Tensor Specifications | T1-T6 dimensions with examples |
+| Training Data Preparation | Temporal splits, next-basket samples |
+| Model Input/Output | Exact dimensions for both models |
+| Two-Stage Inference | How models work together |
+
+**Two-Stage World Model (Recommended for RL/Simulation):**
+```
+Stage 1: Store Visit Prediction (~459K params)
+    Input:  Customer + Time + Previous Store
+    Output: P(next_store) → Which store will they visit?
+
+Stage 2: Next-Basket Prediction (~15M params)
+    Input:  Customer + Time + Predicted Store + Previous Basket
+    Output: P(products) → What will they buy at that store?
+```
+
+**Alternative Training Paradigm:**
 - **Masked Prediction** (~23M params): BERT-style, good for embeddings
-- **Next-Basket Prediction** (~15M params): Predicts future baskets, needed for RL
 
 ## Project Structure
 
@@ -180,12 +205,17 @@ retail_sim/
 │   │   ├── dataset.py
 │   │   └── run_tensor_preparation.py
 │   └── training/             # Section 5
-│       ├── dataset.py        # WorldModelDataset, DataLoader
-│       ├── model.py          # Mamba + Transformer architecture
-│       ├── losses.py         # Focal, Contrastive, Multi-task
-│       ├── train.py          # Training loop
-│       ├── evaluate.py       # Evaluation metrics
-│       └── README.md         # Module documentation
+│       ├── model.py          # Masked prediction model
+│       ├── model_store_visit.py    # Stage 1: Store visit prediction
+│       ├── model_next_basket.py    # Stage 2: Next-basket prediction
+│       ├── dataset_store_visit.py  # Store visit dataset
+│       ├── dataset_next_basket.py  # Next-basket dataset
+│       ├── losses_store_visit.py   # Store visit loss/metrics
+│       ├── losses_next_basket.py   # Next-basket loss/metrics
+│       ├── train_store_visit.py    # Train Stage 1
+│       ├── train_next_basket.py    # Train Stage 2
+│       ├── evaluate_store_visit.py # Evaluate Stage 1
+│       └── evaluate.py       # Evaluation metrics
 ├── docs/                     # Documentation
 │   ├── index.md
 │   ├── section2_data_pipeline.md
@@ -193,7 +223,9 @@ retail_sim/
 │   ├── section4.0_tensor_preparation.md
 │   ├── section5.0_training_data_architecture.md
 │   ├── section5.1_training.md
-│   └── section5.2_training_deep_dive.md
+│   ├── section5.2.1_training_deep_dive.md
+│   ├── section5.2.2_next_basket_prediction.md
+│   └── section5.2.3_store_visit_prediction.md
 ├── pyproject.toml
 └── README.md
 ```
@@ -250,19 +282,38 @@ Memory usage scales linearly with transaction count.
 
 ## Training the World Model
 
+### Two-Stage Approach (Recommended)
+
+```bash
+# Step 1: Prepare training data
+python -m src.data_preparation.stage4_next_basket_samples
+
+# Step 2: Train Stage 1 (Store Visit Prediction)
+python -m src.training.train_store_visit --epochs 10 --batch-size 128
+
+# Step 3: Train Stage 2 (Next-Basket Prediction)
+python -m src.training.train_next_basket --epochs 20 --batch-size 64
+
+# Step 4: Evaluate both stages
+python -m src.training.evaluate_store_visit --checkpoint models/store_visit/best_model.pt
+python -m src.training.evaluate_next_basket --checkpoint models/next_basket/best_model.pt
+```
+
+### Quick Start (Single Model)
+
 ```bash
 # Prepare training data
 python -m src.training.prepare_samples
 python -m src.training.prepare_tensor_cache
 
-# Train the model
+# Train masked prediction model
 python -m src.training.train --epochs 20 --batch-size 256
 
-# Evaluate on test set
+# Evaluate
 python -m src.training.evaluate checkpoints/best_model.pt --split test
 ```
 
-See [Section 5.2: Training Deep Dive](section5.2_training_deep_dive.md) for a detailed explanation of how tensors and temporal data are used in training.
+See [Store Visit Prediction](section5.2.3_store_visit_prediction.md) and [Next-Basket Prediction](section5.2.2_next_basket_prediction.md) for detailed training guides.
 
 ## Next Steps
 
